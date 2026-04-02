@@ -45,3 +45,29 @@ func (e *FieldError) Error() string {
 func (e *FieldError) Unwrap() error {
 	return e.Err
 }
+
+// ScannerError represents an error during message scanning.
+type ScannerError struct {
+	Message   string
+	BytesRead int
+	Cause     error
+}
+
+// Error implements the error interface.
+func (e *ScannerError) Error() string {
+	if e.BytesRead > 0 {
+		return fmt.Sprintf("scanner error at byte %d: %s", e.BytesRead, e.Message)
+	}
+	return fmt.Sprintf("scanner error: %s", e.Message)
+}
+
+// Unwrap returns the underlying error.
+func (e *ScannerError) Unwrap() error {
+	return e.Cause
+}
+
+// Common scanner errors
+var (
+	ErrMessageTooLarge = &ScannerError{Message: "message exceeds maximum size limit"}
+	ErrInvalidMLLP     = &ScannerError{Message: "invalid MLLP frame"}
+)

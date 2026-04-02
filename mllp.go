@@ -51,8 +51,8 @@ func WithWriteTimeout(d time.Duration) ServerOption {
 	}
 }
 
-// WithMaxMessageSize sets the maximum message size.
-func WithMaxMessageSize(size int) ServerOption {
+// WithServerMaxMessageSize sets the maximum message size for the server.
+func WithServerMaxMessageSize(size int) ServerOption {
 	return func(s *Server) {
 		s.maxMessageSize = size
 	}

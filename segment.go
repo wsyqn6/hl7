@@ -100,3 +100,51 @@ func SplitField(value string, separator rune) []string {
 	result = append(result, current)
 	return result
 }
+
+// ParseSegment parses a segment string into a Segment.
+func ParseSegment(data string) *Segment {
+	if data == "" {
+		return nil
+	}
+	delims := DefaultDelimiters()
+	fields := SplitField(data, delims.Field)
+	if len(fields) == 0 {
+		return nil
+	}
+	seg := NewSegment(fields[0])
+	if fields[0] == "MSH" {
+		seg.SetField(1, string(delims.Field))
+		for i, field := range fields[1:] {
+			seg.SetField(i+2, field)
+		}
+	} else {
+		for i, field := range fields[1:] {
+			seg.SetField(i+1, field)
+		}
+	}
+	return &seg
+}
+
+// Field represents a parsed HL7 field.
+type Field struct {
+	Value      string
+	Components []string
+}
+
+// ParseField parses a field string into a Field struct with components.
+func ParseField(data string) Field {
+	components := SplitField(data, '^')
+	value := data
+	if len(components) > 0 {
+		value = components[0]
+	}
+	return Field{
+		Value:      value,
+		Components: components,
+	}
+}
+
+// ParseComponents parses a field string into its components.
+func ParseComponents(data string) []string {
+	return SplitField(data, '^')
+}

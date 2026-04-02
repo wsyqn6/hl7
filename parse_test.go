@@ -476,3 +476,158 @@ func BenchmarkParse(b *testing.B) {
 
 // Ensure io.Reader interface is satisfied
 var _ io.Reader = (*strings.Reader)(nil)
+
+// Fuzz tests
+
+func FuzzMessageParse(f *testing.F) {
+	testcases := []string{
+		"MSH|^~\\&|APP|FAC||||||MSG001|P|2.5",
+		"MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\rPID|1||12345||Smith||19900101|M",
+		"MSH|^~\\&|APP|FAC|||20240101120000||ADT^A01|MSG001|P|2.5\rPID|1||12345||Smith^John||19800115|M\rPV1|1|I|||Dr.Smith",
+		"MSH|^~\\&|SENDING|FACILITY|||202401151200||ADT^A01|MSG001|P|2.5\r",
+		"",
+	}
+	for _, tc := range testcases {
+		f.Add(tc)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		msg, err := Parse([]byte(data))
+		if err != nil {
+			return
+		}
+		_ = msg.Type()
+		_ = msg.ControlID()
+		_ = msg.AllSegments()
+	})
+}
+
+func FuzzSegmentParse(f *testing.F) {
+	testcases := []string{
+		"MSH|^~\\&|APP|FAC||||||MSG001|P|2.5",
+		"PID|1||12345||Smith||19900101|M",
+		"PV1|1|I|||Dr.Smith",
+		"OBR|1||12345|CBC^Complete Blood Count",
+		"",
+	}
+	for _, tc := range testcases {
+		f.Add(tc)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		seg := ParseSegment(data)
+		if seg == nil {
+			return
+		}
+		_ = seg.Name()
+		_ = seg.Field(1)
+		_ = seg.Fields()
+	})
+}
+
+func FuzzFieldParse(f *testing.F) {
+	testcases := []string{
+		"Smith^John",
+		"12345^^^MRN",
+		"19800115",
+		"",
+	}
+	for _, tc := range testcases {
+		f.Add(tc)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		field := ParseField(data)
+		_ = field.Value
+		_ = field.Components
+	})
+}
+
+func FuzzComponentParse(f *testing.F) {
+	testcases := []string{
+		"Smith^John",
+		"12345",
+		"",
+	}
+	for _, tc := range testcases {
+		f.Add(tc)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		comps := ParseComponents(data)
+		_ = len(comps)
+	})
+}
+
+func FuzzScannerStream(f *testing.F) {
+	testcases := []string{
+		"MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\r",
+		"MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\rPID|1||12345||Smith||19900101|M\r\n\nMSH|^~\\&|APP|FAC||||||MSG002|P|2.5\rPID|1||67890||Doe||19850101|F\r",
+	}
+	for _, tc := range testcases {
+		f.Add(tc)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		scanner := NewScanner(strings.NewReader(data))
+		for scanner.Scan() {
+			msg := scanner.Message()
+			if msg != nil {
+				_ = msg.Type()
+				_ = len(msg.AllSegments())
+			}
+		}
+	})
+}
+
+func FuzzScannerMLLPFramed(f *testing.F) {
+	testcases := [][]byte{
+		{0x0B, 'M', 'S', 'H', '|', '^', '~', '\\', '&', '|', 'A', 'P', 'P', '|', 'F', 'A', 'C', '|', '|', '|', '2', '0', '2', '4', '0', '1', '0', '1', '1', '2', '0', '0', '0', '0', '|', '|', 'A', 'D', 'T', '^', 'A', '0', '1', '|', 'M', 'S', 'G', '0', '0', '1', '|', 'P', '|', '2', '.', '5', '\r', 0x1C, 0x0D},
+	}
+	for _, tc := range testcases {
+		f.Add(string(tc))
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		scanner := NewScanner(strings.NewReader(data))
+		for scanner.Scan() {
+			msg := scanner.Message()
+			if msg != nil {
+				_ = msg.Type()
+				_ = msg.ControlID()
+			}
+		}
+	})
+}
+
+func FuzzMessageSplit(f *testing.F) {
+	testcases := []string{
+		"MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\r\rMSH|^~\\&|APP|FAC||||||MSG002|P|2.5",
+		"MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\r",
+		"",
+	}
+	for _, tc := range testcases {
+		f.Add(tc)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		msgs := SplitMessages([]byte(data))
+		_ = len(msgs)
+	})
+}
+
+func FuzzHL7Detection(f *testing.F) {
+	testcases := []string{
+		"MSH|^~\\&|APP|FAC||||||MSG001|P|2.5",
+		"NOTHL7",
+		"",
+		"\x0BMSH|",
+	}
+	for _, tc := range testcases {
+		f.Add(tc)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		_ = IsHL7Message([]byte(data))
+	})
+}

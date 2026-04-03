@@ -3,6 +3,7 @@ package hl7
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -11,61 +12,65 @@ import (
 )
 
 const (
-	// MLLP framing characters
-	// SOH (Start of Heading)
 	MLLP_START = 0x0B
-	// FS (File Separator)
-	MLLP_END = 0x1C
-	// CR (Carriage Return)
-	MLLP_CR = 0x0D
+	MLLP_END   = 0x1C
+	MLLP_CR    = 0x0D
 )
 
-// Handler is a function that handles an HL7 message and returns a response.
 type Handler func(ctx context.Context, msg *Message) (*Message, error)
 
-// Server is an MLLP server.
 type Server struct {
 	addr           string
 	handler        Handler
 	readTimeout    time.Duration
 	writeTimeout   time.Duration
 	maxMessageSize int
+	tlsConfig      *tls.Config
 	listener       net.Listener
 	wg             sync.WaitGroup
 }
 
-// ServerOption configures an MLLP server.
 type ServerOption func(*Server)
 
-// WithReadTimeout sets the read timeout.
 func WithReadTimeout(d time.Duration) ServerOption {
 	return func(s *Server) {
 		s.readTimeout = d
 	}
 }
 
-// WithWriteTimeout sets the write timeout.
 func WithWriteTimeout(d time.Duration) ServerOption {
 	return func(s *Server) {
 		s.writeTimeout = d
 	}
 }
 
-// WithServerMaxMessageSize sets the maximum message size for the server.
 func WithServerMaxMessageSize(size int) ServerOption {
 	return func(s *Server) {
 		s.maxMessageSize = size
 	}
 }
 
-// NewServer creates a new MLLP server.
+func WithTLS(config *tls.Config) ServerOption {
+	return func(s *Server) {
+		s.tlsConfig = config
+	}
+}
+
+func WithInsecureTLS() ServerOption {
+	return func(s *Server) {
+		s.tlsConfig = &tls.Config{
+			InsecureSkipVerify: true,
+		}
+	}
+}
+
 func NewServer(addr string, handler Handler, opts ...ServerOption) *Server {
 	s := &Server{
 		addr:           addr,
 		handler:        handler,
 		readTimeout:    60 * time.Second,
 		writeTimeout:   30 * time.Second,
-		maxMessageSize: 1024 * 1024, // 1MB default
+		maxMessageSize: 1024 * 1024,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -73,7 +78,6 @@ func NewServer(addr string, handler Handler, opts ...ServerOption) *Server {
 	return s
 }
 
-// ListenAndServe starts the server and listens for connections.
 func (s *Server) ListenAndServe() error {
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
@@ -83,13 +87,36 @@ func (s *Server) ListenAndServe() error {
 	return s.Serve(ln)
 }
 
-// Serve accepts connections from the listener and handles them.
+func (s *Server) ListenAndServeTLS(certFile, keyFile string) error {
+	if s.tlsConfig == nil {
+		s.tlsConfig = &tls.Config{}
+	}
+
+	var err error
+	s.tlsConfig.Certificates = make([]tls.Certificate, 1)
+	s.tlsConfig.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("failed to load TLS certificate: %w", err)
+	}
+
+	config := s.tlsConfig
+	if config.MinVersion == 0 {
+		config.MinVersion = tls.VersionTLS12
+	}
+
+	ln, err := tls.Listen("tcp", s.addr, config)
+	if err != nil {
+		return err
+	}
+	s.listener = ln
+	return s.Serve(ln)
+}
+
 func (s *Server) Serve(ln net.Listener) error {
 	s.listener = ln
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			// Check if listener was closed
 			select {
 			case <-s.done():
 				return nil
@@ -102,7 +129,6 @@ func (s *Server) Serve(ln net.Listener) error {
 	}
 }
 
-// Stop gracefully stops the server.
 func (s *Server) Stop() error {
 	if s.listener != nil {
 		s.listener.Close()
@@ -129,7 +155,6 @@ func (s *Server) handleConn(conn net.Conn) {
 	encoder := NewEncoder().WithMLLPFraming(true)
 
 	for {
-		// Read message with MLLP framing
 		if s.readTimeout > 0 {
 			conn.SetReadDeadline(time.Now().Add(s.readTimeout))
 		}
@@ -139,7 +164,6 @@ func (s *Server) handleConn(conn net.Conn) {
 			if err == io.EOF {
 				return
 			}
-			// Send NAK on error
 			nak, _ := Generate(nil, Reject("Failed to read message"))
 			if nakData, err := encoder.Encode(nak); err == nil {
 				conn.Write(nakData)
@@ -147,7 +171,6 @@ func (s *Server) handleConn(conn net.Conn) {
 			return
 		}
 
-		// Parse message
 		msg, err := parser.Parse(data)
 		if err != nil {
 			nak, _ := Generate(nil, Reject(fmt.Sprintf("Parse error: %v", err)))
@@ -157,7 +180,6 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		// Handle message
 		ctx := context.Background()
 		if s.readTimeout > 0 {
 			var cancel context.CancelFunc
@@ -173,7 +195,6 @@ func (s *Server) handleConn(conn net.Conn) {
 			response, _ = Generate(msg, Accept())
 		}
 
-		// Send response
 		if s.writeTimeout > 0 {
 			conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
 		}
@@ -186,9 +207,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 }
 
-// readMLLPMessage reads an MLLP-framed message.
 func readMLLPMessage(r *bufio.Reader, maxSize int) ([]byte, error) {
-	// Read until start byte
 	for {
 		b, err := r.ReadByte()
 		if err != nil {
@@ -199,7 +218,6 @@ func readMLLPMessage(r *bufio.Reader, maxSize int) ([]byte, error) {
 		}
 	}
 
-	// Read until end sequence
 	var msg []byte
 	for {
 		if len(msg) >= maxSize {
@@ -213,35 +231,36 @@ func readMLLPMessage(r *bufio.Reader, maxSize int) ([]byte, error) {
 
 		msg = append(msg, b)
 
-		// Check for end sequence (FS + CR)
 		if len(msg) >= 2 {
 			if msg[len(msg)-2] == MLLP_END && msg[len(msg)-1] == MLLP_CR {
-				// Remove end sequence
 				return msg[:len(msg)-2], nil
 			}
 		}
 	}
 }
 
-// Client is an MLLP client.
 type Client struct {
 	conn    net.Conn
 	parser  *Parser
 	encoder *Encoder
 	timeout time.Duration
+	tls     bool
 }
 
-// ClientOption configures an MLLP client.
 type ClientOption func(*Client)
 
-// WithDialTimeout sets the dial timeout.
 func WithDialTimeout(d time.Duration) ClientOption {
 	return func(c *Client) {
 		c.timeout = d
 	}
 }
 
-// Dial creates a new MLLP client connected to the given address.
+func WithTLSClient(tls bool) ClientOption {
+	return func(c *Client) {
+		c.tls = tls
+	}
+}
+
 func Dial(addr string, opts ...ClientOption) (*Client, error) {
 	c := &Client{
 		parser:  NewParser(),
@@ -260,9 +279,44 @@ func Dial(addr string, opts ...ClientOption) (*Client, error) {
 	return c, nil
 }
 
-// Send sends a message and returns the response.
+func DialTLS(addr string, config *tls.Config, opts ...ClientOption) (*Client, error) {
+	c := &Client{
+		parser:  NewParser(),
+		encoder: NewEncoder().WithMLLPFraming(true),
+		timeout: 10 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	dialer := &net.Dialer{Timeout: c.timeout}
+	conn, err := tls.DialWithDialer(dialer, "tcp", addr, config)
+	if err != nil {
+		return nil, err
+	}
+	c.conn = conn
+	return c, nil
+}
+
+func DialAndSend(ctx context.Context, addr string, msg *Message, opts ...ClientOption) (*Message, error) {
+	client, err := Dial(addr, opts...)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	return client.Send(ctx, msg)
+}
+
+func DialAndSendTLS(ctx context.Context, addr string, msg *Message, config *tls.Config, opts ...ClientOption) (*Message, error) {
+	client, err := DialTLS(addr, config, opts...)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	return client.Send(ctx, msg)
+}
+
 func (c *Client) Send(ctx context.Context, msg *Message) (*Message, error) {
-	// Encode and send message
 	data, err := c.encoder.Encode(msg)
 	if err != nil {
 		return nil, fmt.Errorf("encode error: %w", err)
@@ -276,7 +330,6 @@ func (c *Client) Send(ctx context.Context, msg *Message) (*Message, error) {
 		return nil, fmt.Errorf("write error: %w", err)
 	}
 
-	// Read response
 	if deadline, ok := ctx.Deadline(); ok {
 		c.conn.SetReadDeadline(deadline)
 	}
@@ -286,7 +339,6 @@ func (c *Client) Send(ctx context.Context, msg *Message) (*Message, error) {
 		return nil, fmt.Errorf("read error: %w", err)
 	}
 
-	// Parse response
 	resp, err := c.parser.Parse(respData)
 	if err != nil {
 		return nil, fmt.Errorf("parse error: %w", err)
@@ -295,20 +347,9 @@ func (c *Client) Send(ctx context.Context, msg *Message) (*Message, error) {
 	return resp, nil
 }
 
-// Close closes the client connection.
 func (c *Client) Close() error {
 	if c.conn != nil {
 		return c.conn.Close()
 	}
 	return nil
-}
-
-// DialAndSend is a convenience function to dial and send a message.
-func DialAndSend(ctx context.Context, addr string, msg *Message, opts ...ClientOption) (*Message, error) {
-	client, err := Dial(addr, opts...)
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-	return client.Send(ctx, msg)
 }

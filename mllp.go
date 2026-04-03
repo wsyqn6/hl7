@@ -28,6 +28,8 @@ type Server struct {
 	tlsConfig      *tls.Config
 	listener       net.Listener
 	wg             sync.WaitGroup
+	doneCh         chan struct{}
+	doneOnce       sync.Once
 }
 
 type ServerOption func(*Server)
@@ -138,12 +140,14 @@ func (s *Server) Stop() error {
 }
 
 func (s *Server) done() <-chan struct{} {
-	ch := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(ch)
-	}()
-	return ch
+	s.doneOnce.Do(func() {
+		s.doneCh = make(chan struct{})
+		go func() {
+			s.wg.Wait()
+			close(s.doneCh)
+		}()
+	})
+	return s.doneCh
 }
 
 func (s *Server) handleConn(conn net.Conn) {

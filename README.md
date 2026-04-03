@@ -13,10 +13,12 @@
 - 🔍 **Full HL7 v2.x Support** - Parse and encode all HL7 v2.x message types (2.3, 2.4, 2.5, etc.)
 - ⚡ **Struct Marshaling** - Map HL7 data to Go structs using intuitive `hl7` tags
 - 🌊 **Streaming Parser** - Memory-efficient parsing with MLLP frame support
-- 🌐 **MLLP Network Transport** - Built-in client/server for HL7 over TCP
+- 🌐 **MLLP Network Transport** - Built-in client/server for HL7 over TCP with TLS support
 - ✅ **Message Validation** - Flexible validation with built-in and custom rules
 - 📝 **ACK/NAK Generation** - Automatic acknowledgment message creation
 - 🔄 **Bidirectional Conversion** - Parse HL7 to structs, marshal structs back to HL7
+- 📊 **Schema-less Parsing** - Access fields without predefined structs using `Get()` method
+- 🔧 **Segment Helpers** - Convenient methods for common segments (PID, MSH, PV1, OBR, OBX, NK1, DG1)
 
 ### Installation
 
@@ -79,6 +81,61 @@ if err := hl7.Unmarshal(data, &patient); err != nil {
 fmt.Printf("Patient: %s, %s (MRN: %s)\n", patient.LastName, patient.FirstName, patient.MRN)
 ```
 
+#### Schema-less Parsing
+
+Access fields without predefined structs:
+
+```go
+// Simple field access
+lastName, _ := msg.Get("PID.5.1")
+firstName, _ := msg.Get("PID.5.2")
+
+// Component access
+patientID := msg.MustGet("PID.3")      // Full field
+mrn := msg.MustGet("PID.3.1")          // First component
+
+// Repeated segments
+wbc := msg.MustGet("OBX[1].5")         // First OBX observation value
+rbc := msg.MustGet("OBX[2].5")         // Second OBX observation value
+```
+
+#### Segment Helpers
+
+Convenient methods for common segments:
+
+```go
+// PID segment
+pid := msg.PID()
+fmt.Printf("Patient: %s, %s\n", pid.LastName(), pid.FirstName())
+fmt.Printf("DOB: %s, Gender: %s\n", pid.DateOfBirth(), pid.Gender())
+
+// MSH segment
+msh := msg.MSH()
+fmt.Printf("From: %s@%s\n", msh.SendingApplication(), msh.SendingFacility())
+
+// OBX results (repeated)
+for _, obx := range msg.AllOBX() {
+    fmt.Printf("%s: %s %s\n", obx.ObservationIdentifierCode(), obx.ObservationValue(), obx.Units())
+}
+```
+
+#### TLS MLLP Server
+
+Secure MLLP server with TLS:
+
+```go
+handler := func(ctx context.Context, msg *hl7.Message) (*hl7.Message, error) {
+    return hl7.Generate(msg, hl7.Accept())
+}
+
+server := hl7.NewServer(":2575", handler,
+    hl7.WithTLS(nil),  // Uses cert/key files
+)
+if err := server.ListenAndServeTLS("cert.pem", "key.pem"); err != nil {
+    log.Fatal(err)
+}
+```
+
 #### Validation
 
 ```go
@@ -134,10 +191,28 @@ if err != nil {
 | `Encode(msg *Message)` | Encode Message to bytes |
 | `Unmarshal(data []byte, v interface{})` | Unmarshal HL7 into a struct |
 | `Marshal(v interface{})` | Marshal a struct to HL7 bytes |
+| `msg.Get(location)` | Get field value by location (e.g., "PID.5.1") |
+| `msg.MustGet(location)` | Get field value, panic on error |
+| `msg.Iterate()` | Iterate over all segments |
+| `msg.Stats()` | Get message statistics |
 | `Generate(msg *Message, opts ...ACKOption)` | Generate ACK/NAK response |
 | `NewValidator(rules ...Rule)` | Create a message validator |
 | `NewServer(addr string, handler Handler)` | Create MLLP server |
 | `Dial(addr string)` | Create MLLP client |
+| `DialTLS(addr string, config)` | Create MLLP client with TLS |
+
+### Segment Helpers
+
+| Helper | Description |
+|--------|-------------|
+| `msg.PID()` | Get PID segment helper |
+| `msg.MSH()` | Get MSH segment helper |
+| `msg.PV1()` | Get PV1 segment helper |
+| `msg.OBR()` | Get OBR segment helper |
+| `msg.OBX()` | Get first OBX segment helper |
+| `msg.AllOBX()` | Get all OBX segments |
+| `msg.NK1()` | Get NK1 segment helper |
+| `msg.DG1()` | Get DG1 segment helper |
 
 ### License
 
@@ -152,10 +227,12 @@ MIT License - see [LICENSE](LICENSE) for details.
 - 🔍 **完整的 HL7 v2.x 支持** - 解析和编码所有 HL7 v2.x 消息类型（2.3、2.4、2.5 等）
 - ⚡ **结构体序列化** - 通过直观的 `hl7` 标签将 HL7 数据映射到 Go 结构体
 - 🌊 **流式解析器** - 高效内存使用的流式解析，支持 MLLP 帧
-- 🌐 **MLLP 网络传输** - 内置的 HL7 over TCP 客户端/服务器
+- 🌐 **MLLP 网络传输** - 内置的 HL7 over TCP 客户端/服务器，支持 TLS
 - ✅ **消息验证** - 灵活的验证规则，支持内置和自定义规则
 - 📝 **ACK/NAK 生成** - 自动创建确认和拒绝消息
 - 🔄 **双向转换** - 解析 HL7 为结构体，将结构体编组回 HL7
+- 📊 **无模式解析** - 使用 `Get()` 方法无需预定义结构体即可访问字段
+- 🔧 **段帮助函数** - 常用段（PID、MSH、PV1、OBR、OBX、NK1、DG1）的便捷方法
 
 ### 安装
 
@@ -218,6 +295,61 @@ if err := hl7.Unmarshal(data, &patient); err != nil {
 fmt.Printf("患者: %s, %s (病历号: %s)\n", patient.LastName, patient.FirstName, patient.MRN)
 ```
 
+#### 无模式解析
+
+无需预定义结构体即可访问字段：
+
+```go
+// 简单字段访问
+lastName, _ := msg.Get("PID.5.1")
+firstName, _ := msg.Get("PID.5.2")
+
+// 组件访问
+patientID := msg.MustGet("PID.3")     // 完整字段
+mrn := msg.MustGet("PID.3.1")          // 第一组件
+
+// 重复段
+wbc := msg.MustGet("OBX[1].5")        // 第一个 OBX 观察值
+rbc := msg.MustGet("OBX[2].5")        // 第二个 OBX 观察值
+```
+
+#### 段帮助函数
+
+常用段的便捷方法：
+
+```go
+// PID 段
+pid := msg.PID()
+fmt.Printf("患者: %s, %s\n", pid.LastName(), pid.FirstName())
+fmt.Printf("出生日期: %s, 性别: %s\n", pid.DateOfBirth(), pid.Gender())
+
+// MSH 段
+msh := msg.MSH()
+fmt.Printf("来自: %s@%s\n", msh.SendingApplication(), msh.SendingFacility())
+
+// OBX 结果（重复段）
+for _, obx := range msg.AllOBX() {
+    fmt.Printf("%s: %s %s\n", obx.ObservationIdentifierCode(), obx.ObservationValue(), obx.Units())
+}
+```
+
+#### TLS MLLP 服务器
+
+支持 TLS 的安全 MLLP 服务器：
+
+```go
+handler := func(ctx context.Context, msg *hl7.Message) (*hl7.Message, error) {
+    return hl7.Generate(msg, hl7.Accept())
+}
+
+server := hl7.NewServer(":2575", handler,
+    hl7.WithTLS(nil),  // 使用证书/密钥文件
+)
+if err := server.ListenAndServeTLS("cert.pem", "key.pem"); err != nil {
+    log.Fatal(err)
+}
+```
+
 #### 消息验证
 
 ```go
@@ -273,10 +405,28 @@ if err != nil {
 | `Encode(msg *Message)` | 将 Message 编码为字节 |
 | `Unmarshal(data []byte, v interface{})` | 将 HL7 反序列化为结构体 |
 | `Marshal(v interface{})` | 将结构体编组为 HL7 字节 |
+| `msg.Get(location)` | 按位置获取字段值（如 "PID.5.1"）|
+| `msg.MustGet(location)` | 获取字段值，错误时 panic |
+| `msg.Iterate()` | 遍历所有段 |
+| `msg.Stats()` | 获取消息统计信息 |
 | `Generate(msg *Message, opts ...ACKOption)` | 生成 ACK/NAK 响应 |
 | `NewValidator(rules ...Rule)` | 创建消息验证器 |
 | `NewServer(addr string, handler Handler)` | 创建 MLLP 服务器 |
 | `Dial(addr string)` | 创建 MLLP 客户端 |
+| `DialTLS(addr string, config)` | 创建 TLS MLLP 客户端 |
+
+### 段帮助函数
+
+| 帮助函数 | 描述 |
+|----------|------|
+| `msg.PID()` | 获取 PID 段帮助器 |
+| `msg.MSH()` | 获取 MSH 段帮助器 |
+| `msg.PV1()` | 获取 PV1 段帮助器 |
+| `msg.OBR()` | 获取 OBR 段帮助器 |
+| `msg.OBX()` | 获取第一个 OBX 段帮助器 |
+| `msg.AllOBX()` | 获取所有 OBX 段 |
+| `msg.NK1()` | 获取 NK1 段帮助器 |
+| `msg.DG1()` | 获取 DG1 段帮助器 |
 
 ### 许可证
 

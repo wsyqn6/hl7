@@ -471,3 +471,258 @@ func TestSegmentHelperNotExists(t *testing.T) {
 		})
 	}
 }
+
+func TestPV1HelperAllMethods(t *testing.T) {
+	data := []byte("MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\r" +
+		"PV1|1|I|ICU^Room101^Bed1^^^HOSP|U|||DrSmith^12345||ICU||||||||||||20240101100000|20240105150000")
+
+	msg, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	pv1 := msg.PV1()
+
+	if pv1.SetID() != "1" {
+		t.Errorf("SetID() = %q, want %q", pv1.SetID(), "1")
+	}
+
+	if pv1.PatientClass() != "I" {
+		t.Errorf("PatientClass() = %q, want %q", pv1.PatientClass(), "I")
+	}
+
+	loc := pv1.AssignedPatientLocation()
+	if loc == "" {
+		t.Error("AssignedPatientLocation() should not be empty")
+	}
+
+	if pv1.LocationPointOfCare() != "ICU" {
+		t.Errorf("LocationPointOfCare() = %q, want %q", pv1.LocationPointOfCare(), "ICU")
+	}
+
+	if pv1.LocationRoom() != "Room101" {
+		t.Errorf("LocationRoom() = %q, want %q", pv1.LocationRoom(), "Room101")
+	}
+
+	if pv1.LocationBed() != "Bed1" {
+		t.Errorf("LocationBed() = %q, want %q", pv1.LocationBed(), "Bed1")
+	}
+
+	if pv1.AdmissionType() != "U" {
+		t.Errorf("AdmissionType() mismatch")
+	}
+}
+
+func TestOBRHelperAllMethods(t *testing.T) {
+	data := []byte("MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\r" +
+		"OBR|1|ORDER001|FILL001|80053^COMPREHENSIVE METABOLIC PANEL^CPT|||20240115093000|20240115100000||5||||||||F|||Reason|")
+
+	msg, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	obr := msg.OBR()
+
+	if obr.SetID() != "1" {
+		t.Errorf("SetID() = %q, want %q", obr.SetID(), "1")
+	}
+
+	if obr.PlacerOrderNumber() != "ORDER001" {
+		t.Errorf("PlacerOrderNumber() = %q, want %q", obr.PlacerOrderNumber(), "ORDER001")
+	}
+
+	if obr.FillerOrderNumber() != "FILL001" {
+		t.Errorf("FillerOrderNumber() = %q, want %q", obr.FillerOrderNumber(), "FILL001")
+	}
+
+	if obr.UniversalServiceID() != "80053^COMPREHENSIVE METABOLIC PANEL^CPT" {
+		t.Errorf("UniversalServiceID() mismatch")
+	}
+
+	if obr.ServiceIdentifier() != "80053" {
+		t.Errorf("ServiceIdentifier() = %q, want %q", obr.ServiceIdentifier(), "80053")
+	}
+
+	if obr.ServiceText() != "COMPREHENSIVE METABOLIC PANEL" {
+		t.Errorf("ServiceText() = %q, want %q", obr.ServiceText(), "COMPREHENSIVE METABOLIC PANEL")
+	}
+
+	sid := obr.UniversalServiceID()
+	if sid == "" {
+		t.Error("UniversalServiceID() should not be empty")
+	}
+}
+
+func TestOBXHelperAllMethods(t *testing.T) {
+	data := []byte("MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\r" +
+		"OBX|1|NM|WBC^White Blood Cell Count^LN|1|7.5|10*3/uL|4.5-11.0|H^L|||F|||20240115120000|LIS^Lab^ST")
+
+	msg, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	obx := msg.OBX()
+
+	if obx.SetID() != "1" {
+		t.Errorf("SetID() = %q, want %q", obx.SetID(), "1")
+	}
+
+	if obx.ValueType() != "NM" {
+		t.Errorf("ValueType() = %q, want %q", obx.ValueType(), "NM")
+	}
+
+	if obx.ObservationIdentifier() != "WBC^White Blood Cell Count^LN" {
+		t.Errorf("ObservationIdentifier() mismatch")
+	}
+
+	if obx.ObservationIdentifierCode() != "WBC" {
+		t.Errorf("ObservationIdentifierCode() = %q, want %q", obx.ObservationIdentifierCode(), "WBC")
+	}
+
+	if obx.ObservationSubID() != "1" {
+		t.Errorf("ObservationSubID() = %q, want %q", obx.ObservationSubID(), "1")
+	}
+
+	if obx.ObservationValue() != "7.5" {
+		t.Errorf("ObservationValue() = %q, want %q", obx.ObservationValue(), "7.5")
+	}
+
+	if obx.Units() != "10*3/uL" {
+		t.Errorf("Units() = %q, want %q", obx.Units(), "10*3/uL")
+	}
+
+	if obx.ReferenceRange() != "4.5-11.0" {
+		t.Errorf("ReferenceRange() = %q, want %q", obx.ReferenceRange(), "4.5-11.0")
+	}
+
+	flags := obx.AbnormalFlags()
+	if len(flags) != 2 {
+		t.Errorf("AbnormalFlags() returned %d, want 2", len(flags))
+	}
+
+	if obx.ResultStatus() != "F" {
+		t.Errorf("ResultStatus() = %q, want %q", obx.ResultStatus(), "F")
+	}
+
+	if obx.ObservationDateTime() != "20240115120000" {
+		t.Errorf("ObservationDateTime() mismatch")
+	}
+
+	if obx.ProducersID() != "LIS^Lab^ST" {
+		t.Errorf("ProducersID() mismatch")
+	}
+}
+
+func TestNK1HelperAllMethods(t *testing.T) {
+	data := []byte("MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\r" +
+		"NK1|1|Smith^Jane^SP|Sister|123 Main St^City^ST^12345||555-9999")
+
+	msg, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	nk1 := msg.NK1()
+
+	if nk1.SetID() != "1" {
+		t.Errorf("SetID() = %q, want %q", nk1.SetID(), "1")
+	}
+
+	if nk1.Name() != "Smith^Jane^SP" {
+		t.Errorf("Name() mismatch")
+	}
+
+	if nk1.Relationship() != "Sister" {
+		t.Errorf("Relationship() = %q, want %q", nk1.Relationship(), "Sister")
+	}
+
+	addr := nk1.Address()
+	if addr == "" {
+		t.Error("Address() should not be empty")
+	}
+}
+
+func TestDG1HelperAllMethods(t *testing.T) {
+	data := []byte("MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\r" +
+		"DG1|1||ICD10||Pneumonia|20240115||W|")
+
+	msg, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	dg1 := msg.DG1()
+
+	if dg1.SetID() != "1" {
+		t.Errorf("SetID() = %q, want %q", dg1.SetID(), "1")
+	}
+
+	code := dg1.DiagnosisCode()
+	if code == "" {
+		t.Error("DiagnosisCode() should not be empty")
+	}
+}
+
+func TestAllNK1Helper(t *testing.T) {
+	data := []byte("MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\r" +
+		"NK1|1|Spouse1^Jane||Spouse\r" +
+		"NK1|2|Spouse2^John||Spouse")
+
+	msg, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	nk1s := msg.AllNK1()
+	if len(nk1s) != 2 {
+		t.Errorf("AllNK1() returned %d, want 2", len(nk1s))
+	}
+
+	if nk1s[0].Name() != "Spouse1^Jane" {
+		t.Errorf("NK1[0].Name() mismatch")
+	}
+
+	if nk1s[1].Name() != "Spouse2^John" {
+		t.Errorf("NK1[1].Name() mismatch")
+	}
+}
+
+func TestAllDG1Helper(t *testing.T) {
+	data := []byte("MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\r" +
+		"DG1|1||ICD10||Diagnosis1|||W|\r" +
+		"DG1|2||ICD11||Diagnosis2|||A|")
+
+	msg, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	dg1s := msg.AllDG1()
+	if len(dg1s) != 2 {
+		t.Errorf("AllDG1() returned %d, want 2", len(dg1s))
+	}
+
+	for i, dg1 := range dg1s {
+		if !dg1.Exists() {
+			t.Errorf("DG1[%d] should exist", i)
+		}
+	}
+}
+
+func TestAllOBRHelper(t *testing.T) {
+	data := []byte("MSH|^~\\&|APP|FAC||||||MSG001|P|2.5\r" +
+		"OBR|1|||CBC\r" +
+		"OBR|2|||Lipid")
+
+	msg, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	obrs := msg.AllOBR()
+	if len(obrs) != 2 {
+		t.Errorf("AllOBR() returned %d, want 2", len(obrs))
+	}
+}

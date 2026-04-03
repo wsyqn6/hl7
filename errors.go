@@ -4,17 +4,16 @@ import "fmt"
 
 // ParseError represents an error that occurs during HL7 message parsing.
 type ParseError struct {
-	Line    int
 	Field   string
 	Message string
 }
 
 // Error implements the error interface.
 func (e *ParseError) Error() string {
-	if e.Line > 0 {
-		return fmt.Sprintf("parse error at line %d, field %s: %s", e.Line, e.Field, e.Message)
+	if e.Field != "" {
+		return fmt.Sprintf("parse error at field %s: %s", e.Field, e.Message)
 	}
-	return fmt.Sprintf("parse error at field %s: %s", e.Field, e.Message)
+	return fmt.Sprintf("parse error: %s", e.Message)
 }
 
 // ValidationError represents a validation error for an HL7 message.

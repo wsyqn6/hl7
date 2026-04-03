@@ -48,8 +48,8 @@ type requiredRule struct {
 }
 
 func (r *requiredRule) Validate(msg *Message) *ValidationError {
-	data := getLocationData(msg, r.location)
-	if data == "" {
+	data, err := msg.Get(r.location)
+	if err != nil || data == "" {
 		return &ValidationError{
 			Location: r.location,
 			Message:  "field is required",
@@ -69,7 +69,13 @@ type valueRule struct {
 }
 
 func (r *valueRule) Validate(msg *Message) *ValidationError {
-	data := getLocationData(msg, r.location)
+	data, err := msg.Get(r.location)
+	if err != nil {
+		return &ValidationError{
+			Location: r.location,
+			Message:  err.Error(),
+		}
+	}
 	if data != r.expected {
 		return &ValidationError{
 			Location: r.location,
@@ -90,7 +96,10 @@ type patternRule struct {
 }
 
 func (r *patternRule) Validate(msg *Message) *ValidationError {
-	data := getLocationData(msg, r.location)
+	data, err := msg.Get(r.location)
+	if err != nil {
+		return nil // Skip if location doesn't exist
+	}
 	if data == "" {
 		return nil // Skip empty values (use Required if needed)
 	}
@@ -114,7 +123,10 @@ type oneOfRule struct {
 }
 
 func (r *oneOfRule) Validate(msg *Message) *ValidationError {
-	data := getLocationData(msg, r.location)
+	data, err := msg.Get(r.location)
+	if err != nil {
+		return nil // Skip if location doesn't exist
+	}
 	if data == "" {
 		return nil
 	}
@@ -140,7 +152,10 @@ type minLengthRule struct {
 }
 
 func (r *minLengthRule) Validate(msg *Message) *ValidationError {
-	data := getLocationData(msg, r.location)
+	data, err := msg.Get(r.location)
+	if err != nil {
+		return nil
+	}
 	if len(data) < r.min {
 		return &ValidationError{
 			Location: r.location,
@@ -161,7 +176,10 @@ type maxLengthRule struct {
 }
 
 func (r *maxLengthRule) Validate(msg *Message) *ValidationError {
-	data := getLocationData(msg, r.location)
+	data, err := msg.Get(r.location)
+	if err != nil {
+		return nil
+	}
 	if len(data) > r.max {
 		return &ValidationError{
 			Location: r.location,
@@ -183,7 +201,10 @@ type lengthRule struct {
 }
 
 func (r *lengthRule) Validate(msg *Message) *ValidationError {
-	data := getLocationData(msg, r.location)
+	data, err := msg.Get(r.location)
+	if err != nil {
+		return nil
+	}
 	if len(data) < r.min || len(data) > r.max {
 		return &ValidationError{
 			Location: r.location,
@@ -204,7 +225,10 @@ type customRule struct {
 }
 
 func (r *customRule) Validate(msg *Message) *ValidationError {
-	data := getLocationData(msg, r.location)
+	data, err := msg.Get(r.location)
+	if err != nil {
+		return nil
+	}
 	if err := r.fn(data); err != nil {
 		return &ValidationError{
 			Location: r.location,
@@ -212,76 +236,4 @@ func (r *customRule) Validate(msg *Message) *ValidationError {
 		}
 	}
 	return nil
-}
-
-// getLocationData retrieves data from a location string.
-// Location format: "SEGMENT.FIELD.COMPONENT.SUBCOMPONENT"
-func getLocationData(msg *Message, location string) string {
-	parts := SplitField(location, '.')
-	if len(parts) == 0 {
-		return ""
-	}
-
-	segmentName := parts[0]
-	seg, ok := msg.Segment(segmentName)
-	if !ok {
-		return ""
-	}
-
-	if len(parts) == 1 {
-		return "" // Just segment name, no field
-	}
-
-	fieldIndex := 0
-	for i, c := range parts[1] {
-		if c < '0' || c > '9' {
-			// Not a number, skip
-			return ""
-		}
-		if i == 0 {
-			fieldIndex = int(c - '0')
-		} else {
-			fieldIndex = fieldIndex*10 + int(c-'0')
-		}
-	}
-
-	if fieldIndex == 0 {
-		return ""
-	}
-
-	if len(parts) == 2 {
-		return seg.Field(fieldIndex)
-	}
-
-	// Component
-	compIndex := 0
-	for i, c := range parts[2] {
-		if c < '0' || c > '9' {
-			return ""
-		}
-		if i == 0 {
-			compIndex = int(c - '0')
-		} else {
-			compIndex = compIndex*10 + int(c-'0')
-		}
-	}
-
-	if len(parts) == 3 {
-		return seg.Component(fieldIndex, compIndex)
-	}
-
-	// Subcomponent
-	subIndex := 0
-	for i, c := range parts[3] {
-		if c < '0' || c > '9' {
-			return ""
-		}
-		if i == 0 {
-			subIndex = int(c - '0')
-		} else {
-			subIndex = subIndex*10 + int(c-'0')
-		}
-	}
-
-	return seg.SubComponent(fieldIndex, compIndex, subIndex)
 }

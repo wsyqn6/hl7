@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -79,16 +80,13 @@ func unmarshalStruct(msg *Message, val reflect.Value) error {
 		field := typ.Field(i)
 		fieldVal := val.Field(i)
 
-		// Skip unexported fields
 		if !field.IsExported() {
 			continue
 		}
 
-		// Get hl7 tag
 		tagStr := field.Tag.Get("hl7")
 		tag := parseHL7Tag(tagStr)
 
-		// No tag or embedded struct without tag - recurse into struct
 		if tag == nil || tag.segment == "" {
 			if field.Type.Kind() == reflect.Struct {
 				if err := unmarshalStruct(msg, fieldVal); err != nil {
@@ -98,17 +96,36 @@ func unmarshalStruct(msg *Message, val reflect.Value) error {
 			continue
 		}
 
-		// Tag with only segment name on a struct - treat as nested struct
-		// e.g., hl7:"MSH" on a struct field
-		if tag.field == 0 && field.Type.Kind() == reflect.Struct {
-			// Recurse into nested struct with the segment context
-			if err := unmarshalStruct(msg, fieldVal); err != nil {
+		seg, ok := msg.Segment(tag.segment)
+		if !ok {
+			if tag.isOptional {
+				continue
+			}
+			return fmt.Errorf("segment %s not found", tag.segment)
+		}
+
+		if tag.field == 0 {
+			if field.Type.Kind() == reflect.Struct {
+				if err := unmarshalStruct(msg, fieldVal); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+
+		// Check if field is a struct type for nested component mapping
+		if field.Type.Kind() == reflect.Struct && tag.comp == 0 && tag.sub == 0 {
+			// This is a nested struct like PersonName, try to map components
+			if err := getNestedFieldData(msg, seg, tag, fieldVal); err != nil {
 				return err
 			}
 			continue
 		}
 
 		if err := unmarshalValue(msg, fieldVal, tag); err != nil {
+			if tag.isOptional && strings.Contains(err.Error(), "not found") {
+				continue
+			}
 			return fmt.Errorf("field %s: %w", field.Name, err)
 		}
 	}
@@ -117,22 +134,37 @@ func unmarshalStruct(msg *Message, val reflect.Value) error {
 
 // hl7Tag represents a parsed hl7 struct tag.
 type hl7Tag struct {
-	segment string
-	field   int
-	comp    int
-	sub     int
+	segment    string
+	field      int
+	comp       int
+	sub        int
+	isOptional bool
 }
 
 // parseHL7Tag parses an hl7 struct tag.
-// Supports formats: "segment:field.comp.sub", "segment.field.comp.sub", "PID.3.1"
-func parseHL7Tag(tag string) *hl7Tag {
-	if tag == "" || tag == "-" {
+// Supports formats:
+//   - "PID.3.1" -> segment=PID, field=3, comp=1
+//   - "PID.5" -> segment=PID, field=5
+//   - "segment:PID.3.1" -> segment=PID, field=3, comp=1
+//   - "PID.3.1,optional" -> optional field
+func parseHL7Tag(tagStr string) *hl7Tag {
+	tagStr = strings.TrimSpace(tagStr)
+	if tagStr == "" || tagStr == "-" {
 		return nil
 	}
 
-	t := &hl7Tag{}
+	// Check for optional flag
+	isOptional := false
+	if strings.HasSuffix(tagStr, ",optional") {
+		isOptional = true
+		tagStr = strings.TrimSuffix(tagStr, ",optional")
+		tagStr = strings.TrimSpace(tagStr)
+	}
+
+	t := &hl7Tag{isOptional: isOptional}
+
 	// Format: "segment:PID" or "segment:PID.3.1.2" or "PID.3.1"
-	parts := splitTag(tag)
+	parts := splitTag(tagStr)
 	if len(parts) > 0 {
 		t.segment = parts[0]
 	}
@@ -146,6 +178,89 @@ func parseHL7Tag(tag string) *hl7Tag {
 		t.sub, _ = strconv.Atoi(parts[3])
 	}
 	return t
+}
+
+// getNestedTag retrieves a field value and unmarshals it into a nested struct.
+// For example, if tag is "PID.5" and the field is a PersonName struct,
+// it will parse PID.5 and populate the struct's component fields.
+func getNestedFieldData(msg *Message, seg Segment, tag *hl7Tag, val reflect.Value) error {
+	if tag == nil || tag.field == 0 {
+		return nil
+	}
+
+	fieldData := seg.Field(tag.field)
+	if fieldData == "" {
+		return nil
+	}
+
+	// Parse field into components
+	components := SplitField(fieldData, '^')
+	typ := val.Type()
+
+	// Handle nested struct with component tags (e.g., PersonName)
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		fieldVal := val.Field(i)
+
+		if !field.IsExported() {
+			continue
+		}
+
+		// Get the nested hl7 tag (format: "1", "2", etc.)
+		nestedTagStr := field.Tag.Get("hl7")
+		if nestedTagStr == "" || nestedTagStr == "-" {
+			continue
+		}
+
+		// Parse component index from nested tag
+		compIndex, err := strconv.Atoi(strings.TrimSpace(nestedTagStr))
+		if err != nil || compIndex < 1 || compIndex > len(components) {
+			continue
+		}
+
+		compValue := components[compIndex-1]
+		if err := setFieldValue(fieldVal, compValue); err != nil {
+			continue
+		}
+	}
+
+	return nil
+}
+
+// setFieldValue sets a value on a reflect.Value based on its type.
+func setFieldValue(val reflect.Value, str string) error {
+	if str == "" {
+		return nil
+	}
+
+	switch val.Kind() {
+	case reflect.String:
+		val.SetString(str)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if n, err := strconv.ParseInt(str, 10, 64); err == nil {
+			val.SetInt(n)
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if n, err := strconv.ParseUint(str, 10, 64); err == nil {
+			val.SetUint(n)
+		}
+	case reflect.Float32, reflect.Float64:
+		if f, err := strconv.ParseFloat(str, 64); err == nil {
+			val.SetFloat(f)
+		}
+	case reflect.Bool:
+		if b, err := strconv.ParseBool(str); err == nil {
+			val.SetBool(b)
+		}
+	case reflect.Ptr:
+		// Allocate and set pointer value
+		elemType := val.Type().Elem()
+		newVal := reflect.New(elemType)
+		if err := setFieldValue(newVal.Elem(), str); err == nil {
+			val.Set(newVal)
+		}
+	}
+	return nil
 }
 
 // splitTag splits a tag by colon and dot.
@@ -340,7 +455,6 @@ func marshalStruct(val reflect.Value, msg *Message) error {
 		tagStr := field.Tag.Get("hl7")
 		tag := parseHL7Tag(tagStr)
 
-		// No tag - check for embedded struct
 		if tag == nil || tag.segment == "" {
 			if field.Type.Kind() == reflect.Struct {
 				if err := marshalStruct(fieldVal, msg); err != nil {
@@ -350,36 +464,31 @@ func marshalStruct(val reflect.Value, msg *Message) error {
 			continue
 		}
 
-		// Tag with only segment name on a struct - treat as nested struct
-		// e.g., hl7:"MSH" on a struct field
-		if tag.field == 0 && field.Type.Kind() == reflect.Struct {
-			if err := marshalStruct(fieldVal, msg); err != nil {
-				return err
+		if tag.field == 0 {
+			if field.Type.Kind() == reflect.Struct {
+				if err := marshalStruct(fieldVal, msg); err != nil {
+					return err
+				}
 			}
 			continue
 		}
 
-		// Get or create segment
 		seg, ok := msg.Segment(tag.segment)
 		if !ok {
 			seg = NewSegment(tag.segment)
 		}
 
-		// Check if field is a struct with nested hl7 tags (component structure)
 		if field.Type.Kind() == reflect.Struct {
-			// Marshal nested struct to components
 			if err := marshalNestedStruct(seg, tag.field, fieldVal); err != nil {
 				return fmt.Errorf("field %s: %w", field.Name, err)
 			}
 		} else {
-			// Marshal field value
 			value, err := marshalValue(fieldVal)
 			if err != nil {
 				return fmt.Errorf("field %s: %w", field.Name, err)
 			}
 
 			if tag.comp > 0 {
-				// Component
 				currentField := seg.Field(tag.field)
 				components := SplitField(currentField, '^')
 				for len(components) < tag.comp {
@@ -392,7 +501,6 @@ func marshalStruct(val reflect.Value, msg *Message) error {
 			}
 		}
 
-		// Update segment in message
 		msg.SetSegment(seg)
 	}
 	return nil

@@ -7,21 +7,27 @@ type Encoder struct {
 	delims         Delimiters
 	segmentEnd     []byte
 	useMLLPFraming bool
+	encoding       Encoding
+	escapeHandling bool
 }
 
 // NewEncoder creates a new Encoder with default settings.
 func NewEncoder() *Encoder {
 	return &Encoder{
-		delims:     DefaultDelimiters(),
-		segmentEnd: []byte{'\r'},
+		delims:         DefaultDelimiters(),
+		segmentEnd:     []byte{'\r'},
+		encoding:       EncodingASCII,
+		escapeHandling: true,
 	}
 }
 
 // NewEncoderWithDelimiters creates a new Encoder with custom delimiters.
 func NewEncoderWithDelimiters(delims Delimiters) *Encoder {
 	return &Encoder{
-		delims:     delims,
-		segmentEnd: []byte{'\r'},
+		delims:         delims,
+		segmentEnd:     []byte{'\r'},
+		encoding:       EncodingASCII,
+		escapeHandling: true,
 	}
 }
 

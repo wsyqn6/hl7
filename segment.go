@@ -148,3 +148,40 @@ func ParseField(data string) Field {
 func ParseComponents(data string) []string {
 	return SplitField(data, '^')
 }
+
+// Repetitions returns all repetitions of a field.
+func (s Segment) Repetitions(fieldIndex int) []string {
+	field := s.Field(fieldIndex)
+	if field == "" {
+		return nil
+	}
+	return SplitField(field, '~')
+}
+
+// RepetitionCount returns the number of repetitions for a field.
+func (s Segment) RepetitionCount(fieldIndex int) int {
+	return len(s.Repetitions(fieldIndex))
+}
+
+// Components returns all components of a field.
+func (s Segment) Components(fieldIndex int) []string {
+	field := s.Field(fieldIndex)
+	if field == "" {
+		return nil
+	}
+	return SplitField(field, '^')
+}
+
+// ComponentCount returns the number of components in a field.
+func (s Segment) ComponentCount(fieldIndex int) int {
+	return len(s.Components(fieldIndex))
+}
+
+// GetRepetition returns a specific repetition of a field by index (1-based).
+func (s Segment) GetRepetition(fieldIndex, repetitionIndex int) string {
+	reps := s.Repetitions(fieldIndex)
+	if repetitionIndex < 1 || repetitionIndex > len(reps) {
+		return ""
+	}
+	return reps[repetitionIndex-1]
+}

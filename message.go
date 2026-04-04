@@ -112,110 +112,160 @@ func (m *Message) SetSegment(seg Segment) {
 	m.segments = append(m.segments, seg)
 }
 
+// Location represents a parsed HL7 location string.
+type Location struct {
+	Segment      string
+	SegmentIndex int // 0 means first/none
+	Field        int
+	Component    int
+	SubComponent int
+	Repetition   int // For repeated fields within a segment
+}
+
+// ParseLocation parses a location string into a Location struct.
+// Supports formats:
+//   - "PID" -> segment only
+//   - "PID.3" -> segment.field
+//   - "PID.3.1" -> segment.field.component
+//   - "PID.3.1.2" -> segment.field.component.subcomponent
+//   - "PID[1]" -> first PID segment
+//   - "PID[2].3" -> second PID segment, field 3
+//   - "PID.3[0]" -> first repetition of field 3
+//   - "PID.3[1].1" -> second repetition of field 3, component 1
+func ParseLocation(location string) (*Location, error) {
+	loc := &Location{}
+
+	if location == "" {
+		return nil, fmt.Errorf("empty location")
+	}
+
+	parts := strings.Split(location, ".")
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("invalid location: %s", location)
+	}
+
+	segPart := parts[0]
+
+	idxStart := strings.Index(segPart, "[")
+	idxEnd := strings.Index(segPart, "]")
+
+	if idxStart >= 0 && idxEnd > idxStart {
+		loc.Segment = segPart[:idxStart]
+		idxStr := segPart[idxStart+1 : idxEnd]
+		loc.SegmentIndex, _ = strconv.Atoi(idxStr)
+	} else {
+		loc.Segment = segPart
+	}
+
+	if loc.Segment == "" {
+		return nil, fmt.Errorf("empty segment name")
+	}
+
+	if len(parts) > 1 {
+		fieldStr := parts[1]
+
+		repStart := strings.Index(fieldStr, "[")
+		repEnd := strings.Index(fieldStr, "]")
+
+		var actualFieldStr string
+		if repStart >= 0 && repEnd > repStart {
+			actualFieldStr = fieldStr[:repStart]
+			repStr := fieldStr[repStart+1 : repEnd]
+			loc.Repetition, _ = strconv.Atoi(repStr)
+		} else {
+			actualFieldStr = fieldStr
+		}
+
+		loc.Field, _ = strconv.Atoi(actualFieldStr)
+		if loc.Field < 1 {
+			return nil, fmt.Errorf("invalid field index: %d", loc.Field)
+		}
+	}
+
+	if len(parts) > 2 {
+		compStr := parts[2]
+		loc.Component, _ = strconv.Atoi(compStr)
+		if loc.Component < 1 {
+			return nil, fmt.Errorf("invalid component index: %d", loc.Component)
+		}
+	}
+
+	if len(parts) > 3 {
+		subStr := parts[3]
+		loc.SubComponent, _ = strconv.Atoi(subStr)
+		if loc.SubComponent < 1 {
+			return nil, fmt.Errorf("invalid subcomponent index: %d", loc.SubComponent)
+		}
+	}
+
+	return loc, nil
+}
+
 // Get retrieves a field value by location string.
 // Location format: "SEGMENT.FIELD" or "SEGMENT.FIELD.COMPONENT" or "SEGMENT.FIELD.COMPONENT.SUBCOMPONENT"
 // For repeated segments, use: "SEGMENT[INDEX].FIELD"
 func (m *Message) Get(location string) (string, error) {
-	parts := SplitField(location, '.')
-	if len(parts) == 0 {
-		return "", fmt.Errorf("invalid location: %s", location)
-	}
-
-	segmentName := parts[0]
-
-	// Check for repeated segment index
-	var segIndex int
-	var segNamePart string
-	segNamePart = segmentName
-	if len(segmentName) > 0 {
-		for i := 0; i < len(segmentName); i++ {
-			if segmentName[i] == '[' {
-				segNamePart = segmentName[:i]
-				break
-			}
-		}
-	}
-
-	// Parse index if present
-	if idxStart := strings.Index(segmentName, "["); idxStart >= 0 {
-		segNamePart = segmentName[:idxStart]
-		if idxEnd := strings.Index(segmentName, "]"); idxEnd > idxStart {
-			idxStr := segmentName[idxStart+1 : idxEnd]
-			segIndex, _ = strconv.Atoi(idxStr)
-		}
+	loc, err := ParseLocation(location)
+	if err != nil {
+		return "", err
 	}
 
 	var seg Segment
 	var ok bool
 
-	if segIndex > 0 {
-		segs := m.Segments(segNamePart)
-		if segIndex-1 < len(segs) {
-			seg = segs[segIndex-1]
+	if loc.SegmentIndex > 0 {
+		segs := m.Segments(loc.Segment)
+		if loc.SegmentIndex-1 < len(segs) {
+			seg = segs[loc.SegmentIndex-1]
 			ok = true
 		}
 	} else {
-		seg, ok = m.Segment(segNamePart)
+		seg, ok = m.Segment(loc.Segment)
 	}
 
 	if !ok {
-		return "", fmt.Errorf("segment not found: %s", segNamePart)
+		return "", fmt.Errorf("segment not found: %s", loc.Segment)
 	}
 
-	if len(parts) == 1 {
+	if loc.Field == 0 {
 		return seg.Name(), nil
 	}
 
-	// Field index
-	fieldStr := parts[1]
-	fieldIdx := 0
-	for _, c := range fieldStr {
-		if c < '0' || c > '9' {
-			return "", fmt.Errorf("invalid field index: %s", fieldStr)
-		}
-		fieldIdx = fieldIdx*10 + int(c-'0')
-	}
-	if fieldIdx < 1 {
-		return "", fmt.Errorf("invalid field index: %d", fieldIdx)
+	fieldValue := seg.Field(loc.Field)
+	if fieldValue == "" {
+		return "", nil
 	}
 
-	fieldValue := seg.Field(fieldIdx)
-	if len(parts) == 2 {
+	if loc.Repetition > 0 {
+		repetitions := SplitField(fieldValue, '~')
+		if loc.Repetition-1 < len(repetitions) {
+			fieldValue = repetitions[loc.Repetition-1]
+		} else {
+			return "", nil
+		}
+	}
+
+	if loc.Component == 0 {
 		return fieldValue, nil
 	}
 
-	// Component index
-	compStr := parts[2]
-	compIdx := 0
-	for _, c := range compStr {
-		if c < '0' || c > '9' {
-			return "", fmt.Errorf("invalid component index: %s", compStr)
-		}
-		compIdx = compIdx*10 + int(c-'0')
-	}
-	if compIdx < 1 {
-		return "", fmt.Errorf("invalid component index: %d", compIdx)
+	components := SplitField(fieldValue, '^')
+	if loc.Component > len(components) {
+		return "", nil
 	}
 
-	compValue := seg.Component(fieldIdx, compIdx)
-	if len(parts) == 3 {
+	compValue := components[loc.Component-1]
+
+	if loc.SubComponent == 0 {
 		return compValue, nil
 	}
 
-	// Subcomponent index
-	subStr := parts[3]
-	subIdx := 0
-	for _, c := range subStr {
-		if c < '0' || c > '9' {
-			return "", fmt.Errorf("invalid subcomponent index: %s", subStr)
-		}
-		subIdx = subIdx*10 + int(c-'0')
-	}
-	if subIdx < 1 {
-		return "", fmt.Errorf("invalid subcomponent index: %d", subIdx)
+	subComponents := SplitField(compValue, '&')
+	if loc.SubComponent > len(subComponents) {
+		return "", nil
 	}
 
-	return seg.SubComponent(fieldIdx, compIdx, subIdx), nil
+	return subComponents[loc.SubComponent-1], nil
 }
 
 // MustGet retrieves a field value by location string, panics on error.
@@ -285,6 +335,62 @@ func (i *SegmentIterator) Segment() Segment {
 // Count returns the number of fields in the segment.
 func (i *SegmentIterator) Count() int {
 	return len(i.Fields)
+}
+
+// GetAllRepetitions returns all repetitions of a field value.
+func (m *Message) GetAllRepetitions(location string) ([]string, error) {
+	loc, err := ParseLocation(location)
+	if err != nil {
+		return nil, err
+	}
+
+	var seg Segment
+	var ok bool
+
+	if loc.SegmentIndex > 0 {
+		segs := m.Segments(loc.Segment)
+		if loc.SegmentIndex-1 < len(segs) {
+			seg = segs[loc.SegmentIndex-1]
+			ok = true
+		}
+	} else {
+		seg, ok = m.Segment(loc.Segment)
+	}
+
+	if !ok {
+		return nil, fmt.Errorf("segment not found: %s", loc.Segment)
+	}
+
+	if loc.Field == 0 {
+		return nil, fmt.Errorf("field index required")
+	}
+
+	fieldValue := seg.Field(loc.Field)
+	if fieldValue == "" {
+		return []string{}, nil
+	}
+
+	return SplitField(fieldValue, '~'), nil
+}
+
+// CountSegment returns the count of segments with the given name.
+func (m *Message) CountSegment(name string) int {
+	return len(m.Segments(name))
+}
+
+// HasSegment checks if a segment exists in the message.
+func (m *Message) HasSegment(name string) bool {
+	_, ok := m.Segment(name)
+	return ok
+}
+
+// GetNthSegment returns the nth segment (1-based index) with the given name.
+func (m *Message) GetNthSegment(name string, n int) (Segment, bool) {
+	segs := m.Segments(name)
+	if n > 0 && n <= len(segs) {
+		return segs[n-1], true
+	}
+	return Segment{}, false
 }
 
 // MessageStats contains statistics about a message.

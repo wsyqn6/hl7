@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"sync"
 	"time"
@@ -244,11 +245,16 @@ func readMLLPMessage(r *bufio.Reader, maxSize int) ([]byte, error) {
 }
 
 type Client struct {
-	conn    net.Conn
-	parser  *Parser
-	encoder *Encoder
-	timeout time.Duration
-	tls     bool
+	conn             net.Conn
+	parser           *Parser
+	encoder          *Encoder
+	timeout          time.Duration
+	tls              bool
+	retryCount       int
+	retryDelay       time.Duration
+	maxRetryDelay    time.Duration
+	backoffMultipler float64
+	onRetry          func(attempt int, err error)
 }
 
 type ClientOption func(*Client)
@@ -262,6 +268,30 @@ func WithDialTimeout(d time.Duration) ClientOption {
 func WithTLSClient(tls bool) ClientOption {
 	return func(c *Client) {
 		c.tls = tls
+	}
+}
+
+func WithRetry(count int, delay time.Duration) ClientOption {
+	return func(c *Client) {
+		c.retryCount = count
+		c.retryDelay = delay
+		c.maxRetryDelay = delay * 10
+		c.backoffMultipler = 2.0
+	}
+}
+
+func WithRetryWithBackoff(count int, initialDelay time.Duration, maxDelay time.Duration) ClientOption {
+	return func(c *Client) {
+		c.retryCount = count
+		c.retryDelay = initialDelay
+		c.maxRetryDelay = maxDelay
+		c.backoffMultipler = 2.0
+	}
+}
+
+func WithOnRetry(fn func(attempt int, err error)) ClientOption {
+	return func(c *Client) {
+		c.onRetry = fn
 	}
 }
 
@@ -281,6 +311,64 @@ func Dial(addr string, opts ...ClientOption) (*Client, error) {
 	}
 	c.conn = conn
 	return c, nil
+}
+
+func (c *Client) SendWithRetry(ctx context.Context, msg *Message) (*Message, error) {
+	if c.retryCount <= 0 {
+		return c.Send(ctx, msg)
+	}
+
+	var lastErr error
+	retryDelay := c.retryDelay
+
+	for attempt := 0; attempt <= c.retryCount; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(retryDelay):
+			}
+
+			if c.onRetry != nil {
+				c.onRetry(attempt, lastErr)
+			}
+
+			retryDelay = time.Duration(math.Min(
+				float64(retryDelay)*c.backoffMultipler,
+				float64(c.maxRetryDelay),
+			))
+		}
+
+		resp, err := c.Send(ctx, msg)
+		if err == nil {
+			return resp, nil
+		}
+
+		lastErr = err
+
+		if c.conn != nil {
+			c.conn.Close()
+		}
+
+		if attempt < c.retryCount {
+			addr := ""
+			if c.conn != nil {
+				addr = c.conn.RemoteAddr().String()
+			}
+
+			if addr == "" {
+				return nil, err
+			}
+
+			conn, connErr := net.DialTimeout("tcp", addr, c.timeout)
+			if connErr != nil {
+				continue
+			}
+			c.conn = conn
+		}
+	}
+
+	return nil, fmt.Errorf("failed after %d retries: %w", c.retryCount, lastErr)
 }
 
 func DialTLS(addr string, config *tls.Config, opts ...ClientOption) (*Client, error) {
@@ -356,4 +444,149 @@ func (c *Client) Close() error {
 		return c.conn.Close()
 	}
 	return nil
+}
+
+func (c *Client) RemoteAddr() string {
+	if c.conn != nil {
+		return c.conn.RemoteAddr().String()
+	}
+	return ""
+}
+
+type ClientPool struct {
+	addr        string
+	opts        []ClientOption
+	clients     chan *Client
+	maxSize     int
+	currentSize int
+	mu          sync.Mutex
+	timeout     time.Duration
+}
+
+type PoolOption func(*ClientPool)
+
+func WithPoolSize(size int) PoolOption {
+	return func(p *ClientPool) {
+		p.maxSize = size
+	}
+}
+
+func NewClientPool(addr string, opts ...ClientOption) *ClientPool {
+	pool := &ClientPool{
+		addr:    addr,
+		opts:    opts,
+		clients: make(chan *Client, 10),
+		maxSize: 10,
+		timeout: 30 * time.Second,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(nil)
+		}
+	}
+	return pool
+}
+
+func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
+	select {
+	case client := <-p.clients:
+		if client.conn != nil {
+			return client, nil
+		}
+	default:
+	}
+
+	p.mu.Lock()
+	if p.currentSize >= p.maxSize {
+		p.mu.Unlock()
+		select {
+		case client := <-p.clients:
+			if client.conn != nil {
+				return client, nil
+			}
+		case <-time.After(p.timeout):
+			return nil, fmt.Errorf("timeout waiting for client from pool")
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	p.currentSize++
+	p.mu.Unlock()
+
+	client, err := Dial(p.addr, p.opts...)
+	if err != nil {
+		p.mu.Lock()
+		p.currentSize--
+		p.mu.Unlock()
+		return nil, err
+	}
+
+	return client, nil
+}
+
+func (p *ClientPool) Put(client *Client) {
+	if client == nil {
+		return
+	}
+
+	select {
+	case p.clients <- client:
+		return
+	default:
+		client.Close()
+	}
+
+	p.mu.Lock()
+	p.currentSize--
+	p.mu.Unlock()
+}
+
+func (p *ClientPool) Close() {
+	close(p.clients)
+	for client := range p.clients {
+		client.Close()
+	}
+	p.mu.Lock()
+	p.currentSize = 0
+	p.mu.Unlock()
+}
+
+func (p *ClientPool) Send(ctx context.Context, msg *Message) (*Message, error) {
+	client, err := p.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Send(ctx, msg)
+	p.Put(client)
+	return resp, err
+}
+
+func (p *ClientPool) SendWithRetry(ctx context.Context, msg *Message) (*Message, error) {
+	client, err := p.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= client.retryCount; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				p.Put(client)
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(math.Pow(2, float64(attempt))) * 100 * time.Millisecond):
+			}
+		}
+
+		resp, err := client.Send(ctx, msg)
+		if err == nil {
+			p.Put(client)
+			return resp, nil
+		}
+		lastErr = err
+	}
+
+	p.Put(client)
+	return nil, fmt.Errorf("failed after %d retries: %w", client.retryCount, lastErr)
 }

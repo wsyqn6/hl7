@@ -180,7 +180,7 @@ func parseHL7Tag(tagStr string) *hl7Tag {
 	return t
 }
 
-// getNestedTag retrieves a field value and unmarshals it into a nested struct.
+// getNestedFieldData retrieves a field value and unmarshals it into a nested struct.
 // For example, if tag is "PID.5" and the field is a PersonName struct,
 // it will parse PID.5 and populate the struct's component fields.
 func getNestedFieldData(msg *Message, seg Segment, tag *hl7Tag, val reflect.Value) error {

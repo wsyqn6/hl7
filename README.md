@@ -81,6 +81,33 @@ if err := hl7.Unmarshal(data, &patient); err != nil {
 fmt.Printf("Patient: %s, %s (MRN: %s)\n", patient.LastName, patient.FirstName, patient.MRN)
 ```
 
+#### Advanced Struct Mapping
+
+**Optional Fields:**
+
+```go
+type Patient struct {
+    MRN       string `hl7:"PID.3.1"`
+    LastName  string `hl7:"PID.5.1"`
+    Phone     string `hl7:"PID.13,optional"`  // Optional - won't error if missing
+}
+```
+
+**Nested Struct with Components:**
+
+```go
+type PersonName struct {
+    FamilyName  string `hl7:"1"`
+    GivenName   string `hl7:"2"`
+    MiddleName  string `hl7:"3"`
+}
+
+type Patient struct {
+    MRN     string     `hl7:"PID.3.1"`
+    Name    PersonName `hl7:"PID.5"`
+}
+```
+
 #### Schema-less Parsing
 
 Access fields without predefined structs:
@@ -117,6 +144,53 @@ fmt.Printf("From: %s@%s\n", msh.SendingApplication(), msh.SendingFacility())
 for _, obx := range msg.AllOBX() {
     fmt.Printf("%s: %s %s\n", obx.ObservationIdentifierCode(), obx.ObservationValue(), obx.Units())
 }
+```
+
+#### Message Type Examples
+
+**ADT (Admission/Discharge/Transfer) Message:**
+
+```go
+// ADT^A01 - Patient Admission
+adtMsg := []byte(`MSH|^~\&|ADT_SYS|HOSPITAL|||^202401151200||ADT^A01|CTRL|P|2.5
+PID|1||12345^^^MRN||Smith^John^A||19800115|M|||123 Main St^^Springfield^IL^62701||555-1234
+PV1|1|I|ICU^Room101^BED1^^^SEC^ICU|||DR001^Dr. Smith^John^MD|||ICU|||||||||ADM`)
+
+msg, _ := hl7.Parse(adtMsg)
+pid := msg.PID()
+fmt.Printf("Patient: %s %s\n", pid.FirstName(), pid.LastName())
+fmt.Printf("Admission Type: %s\n", msg.PV1().AdmissionType())
+```
+
+**ORU (Observation Result) Message:**
+
+```go
+// ORU^R01 - Laboratory Results
+oruMsg := []byte(`MSH|^~\&|LAB_SYS|HOSPITAL|||^202401151200||ORU^R01|CTRL|P|2.5
+PID|1||12345^^^MRN||Smith^John^A||19800115|M
+OBR|1||12345|LAB001^CBC^L|||202401151000|||LAB||||||DR001
+OBX|1|NM|WBC^WBC^LN||7.5|x10^3/uL^3^1^ML||4.5-11.0|N|||F
+OBX|2|NM|RBC^RBC^LN||4.8|x10^6/uL^3^2^ML||4.5-5.5|N|||F
+OBX|3|NM|HGB^Hemoglobin^LN||14.2|g/dL^3^3^ML||12.0-17.0|N|||F`)
+
+msg, _ := hl7.Parse(oruMsg)
+for _, obx := range msg.AllOBX() {
+    fmt.Printf("%s: %s %s\n", obx.ObservationIdentifierCode(), obx.ObservationValue(), obx.Units())
+}
+```
+
+**ORM (Order) Message:**
+
+```go
+// ORM^O01 - General Order
+ormMsg := []byte(`MSH|^~\&|ORD_SYS|HOSPITAL|||^202401151200||ORM^O01|CTRL|P|2.5
+PID|1||12345^^^MRN||Smith^John^A||19800115|M
+ORC|RE|12345|ORD001|CBC^LAB^L||1|||DR001^Dr. Smith^John^MD|||202401151200
+OBR|1||12345|ORD001|CBC^LAB^L|||202401151200|||LAB||||||DR001`)
+
+msg, _ := hl7.Parse(ormMsg)
+orc := msg.ORC()
+fmt.Printf("Order Control: %s\n", orc.OrderStatus())
 ```
 
 #### TLS MLLP Server
@@ -167,19 +241,32 @@ if err := server.ListenAndServe(); err != nil {
 }
 ```
 
-#### MLLP Client
+#### MLLP Client with Retry
 
 ```go
-client, err := hl7.Dial("localhost:2575")
+client, err := hl7.Dial("localhost:2575",
+    hl7.WithRetry(3, 100*time.Millisecond),  // 3 retries with 100ms initial delay
+)
 if err != nil {
     log.Fatal(err)
 }
 defer client.Close()
 
-ack, err := client.Send(ctx, msg)
-if err != nil {
-    log.Fatal(err)
-}
+// SendWithRetry automatically retries on failure
+ack, err := client.SendWithRetry(ctx, msg)
+```
+
+#### MLLP Client Pool
+
+```go
+pool := hl7.NewClientPool("localhost:2575",
+    hl7.WithPoolSize(10),  // Max 10 clients in pool
+    hl7.WithRetry(2, 50*time.Millisecond),
+)
+defer pool.Close()
+
+// Get client from pool, send, return to pool
+ack, err := pool.Send(ctx, msg)
 ```
 
 ### API Reference
@@ -193,13 +280,20 @@ if err != nil {
 | `Marshal(v interface{})` | Marshal a struct to HL7 bytes |
 | `msg.Get(location)` | Get field value by location (e.g., "PID.5.1") |
 | `msg.MustGet(location)` | Get field value, panic on error |
+| `msg.GetAllRepetitions(location)` | Get all repetitions of a field |
+| `msg.CountSegment(name)` | Count segments by name |
+| `msg.HasSegment(name)` | Check if segment exists |
+| `msg.ParseLocation(location)` | Parse location string to Location struct |
 | `msg.Iterate()` | Iterate over all segments |
 | `msg.Stats()` | Get message statistics |
+| `seg.Repetitions(fieldIdx)` | Get all repetitions of a field |
+| `seg.Components(fieldIdx)` | Get all components of a field |
 | `Generate(msg *Message, opts ...ACKOption)` | Generate ACK/NAK response |
 | `NewValidator(rules ...Rule)` | Create a message validator |
 | `NewServer(addr string, handler Handler)` | Create MLLP server |
 | `Dial(addr string)` | Create MLLP client |
 | `DialTLS(addr string, config)` | Create MLLP client with TLS |
+| `NewClientPool(addr)` | Create MLLP client pool |
 
 ### Segment Helpers
 
@@ -381,19 +475,29 @@ if err := server.ListenAndServe(); err != nil {
 }
 ```
 
-#### MLLP 客户端
+#### MLLP 客户端（重试机制）
 
 ```go
-client, err := hl7.Dial("localhost:2575")
-if err != nil {
-    log.Fatal(err)
-}
+client, err := hl7.Dial("localhost:2575",
+    hl7.WithRetry(3, 100*time.Millisecond),  // 3次重试，初始延迟100ms
+)
 defer client.Close()
 
-ack, err := client.Send(ctx, msg)
-if err != nil {
-    log.Fatal(err)
-}
+// 自动重试发送
+ack, err := client.SendWithRetry(ctx, msg)
+```
+
+#### MLLP 连接池
+
+```go
+pool := hl7.NewClientPool("localhost:2575",
+    hl7.WithPoolSize(10),  // 最多10个客户端
+    hl7.WithRetry(2, 50*time.Millisecond),
+)
+defer pool.Close()
+
+// 从池中获取客户端发送
+ack, err := pool.Send(ctx, msg)
 ```
 
 ### API 参考
@@ -407,13 +511,20 @@ if err != nil {
 | `Marshal(v interface{})` | 将结构体编组为 HL7 字节 |
 | `msg.Get(location)` | 按位置获取字段值（如 "PID.5.1"）|
 | `msg.MustGet(location)` | 获取字段值，错误时 panic |
+| `msg.GetAllRepetitions(location)` | 获取字段的所有重复值 |
+| `msg.CountSegment(name)` | 按名称统计段数量 |
+| `msg.HasSegment(name)` | 检查段是否存在 |
+| `msg.ParseLocation(location)` | 解析位置字符串为 Location 结构体 |
 | `msg.Iterate()` | 遍历所有段 |
 | `msg.Stats()` | 获取消息统计信息 |
+| `seg.Repetitions(fieldIdx)` | 获取字段的所有重复值 |
+| `seg.Components(fieldIdx)` | 获取字段的所有组件 |
 | `Generate(msg *Message, opts ...ACKOption)` | 生成 ACK/NAK 响应 |
 | `NewValidator(rules ...Rule)` | 创建消息验证器 |
 | `NewServer(addr string, handler Handler)` | 创建 MLLP 服务器 |
 | `Dial(addr string)` | 创建 MLLP 客户端 |
 | `DialTLS(addr string, config)` | 创建 TLS MLLP 客户端 |
+| `NewClientPool(addr)` | 创建 MLLP 客户端连接池 |
 
 ### 段帮助函数
 

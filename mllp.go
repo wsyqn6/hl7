@@ -313,6 +313,8 @@ func Dial(addr string, opts ...ClientOption) (*Client, error) {
 	return c, nil
 }
 
+// SendWithRetry sends a message with retry on failure.
+// Uses exponential backoff between retries.
 func (c *Client) SendWithRetry(ctx context.Context, msg *Message) (*Message, error) {
 	if c.retryCount <= 0 {
 		return c.Send(ctx, msg)
@@ -471,6 +473,7 @@ func WithPoolSize(size int) PoolOption {
 	}
 }
 
+// NewClientPool creates a new client pool for connection reuse.
 func NewClientPool(addr string, opts ...ClientOption) *ClientPool {
 	pool := &ClientPool{
 		addr:    addr,
@@ -487,6 +490,7 @@ func NewClientPool(addr string, opts ...ClientOption) *ClientPool {
 	return pool
 }
 
+// Get retrieves a client from the pool, creating a new one if needed.
 func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
 	select {
 	case client := <-p.clients:
@@ -524,6 +528,7 @@ func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
 	return client, nil
 }
 
+// Put returns a client to the pool for reuse.
 func (p *ClientPool) Put(client *Client) {
 	if client == nil {
 		return
@@ -541,6 +546,7 @@ func (p *ClientPool) Put(client *Client) {
 	p.mu.Unlock()
 }
 
+// Close closes the pool and all client connections.
 func (p *ClientPool) Close() {
 	close(p.clients)
 	for client := range p.clients {
@@ -551,6 +557,7 @@ func (p *ClientPool) Close() {
 	p.mu.Unlock()
 }
 
+// Send sends a message using a pooled client.
 func (p *ClientPool) Send(ctx context.Context, msg *Message) (*Message, error) {
 	client, err := p.Get(ctx)
 	if err != nil {
@@ -562,6 +569,7 @@ func (p *ClientPool) Send(ctx context.Context, msg *Message) (*Message, error) {
 	return resp, err
 }
 
+// SendWithRetry sends a message using a pooled client with retry support.
 func (p *ClientPool) SendWithRetry(ctx context.Context, msg *Message) (*Message, error) {
 	client, err := p.Get(ctx)
 	if err != nil {

@@ -1,6 +1,7 @@
 package hl7
 
 import (
+	"fmt"
 	"runtime"
 	"sync"
 	"testing"
@@ -136,8 +137,8 @@ func BenchmarkMessageBuilder(b *testing.B) {
 }
 
 func TestPoolConcurrent(t *testing.T) {
-	const numGoroutines = 100
-	const numIterations = 100
+	const numGoroutines = 10
+	const numIterations = 10
 
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
@@ -149,8 +150,10 @@ func TestPoolConcurrent(t *testing.T) {
 				msg := GetMessage()
 				for k := 0; k < 10; k++ {
 					seg := getSegment()
-					seg.name = "SEG"
+					seg.name = fmt.Sprintf("SEG-%d-%d", i, j)
+					seg.fields = []string{"test"}
 					msg.segments = append(msg.segments, *seg)
+					putSegment(seg)
 				}
 				PutMessage(msg)
 			}

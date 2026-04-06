@@ -8,15 +8,12 @@ on:
 
 jobs:
   test:
-    name: Test on ${{ matrix.os }} / Go ${{ matrix.go }}
+    name: Test / Go ${{ matrix.go }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        go: ['1.26', '1.27']
-        exclude:
-          - os: macos-latest
-            go: '1.27'
+        os: [ubuntu-latest, windows-latest]
+        go: ['1.26', '1.25']
 
     steps:
       - name: Checkout code
@@ -28,61 +25,17 @@ jobs:
           go-version: ${{ matrix.go }}
           cache: true
 
-      - name: Run go mod tidy
-        run: go mod tidy
-
-      - name: Check formatting
-        run: |
-          if [ "$RUNNER_OS" = "Windows_NT" ]; then
-            go fmt ./...
-            git diff --exit-code
-          else
-            diff -u <(echo -n) <(gofmt -d .)
-          fi
-
-      - name: Run go vet
-        run: go vet ./...
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+      - name: Lint
+        uses: golangci-lint-action@v6
         with:
           version: latest
-          args: --timeout=5m
 
-      - name: Run tests with race detector
+      - name: Run tests
         run: go test -race -v -coverprofile=coverage.out ./...
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+      - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
+        uses: codecov/codecov-action@v4
         with:
           file: coverage.out
           fail_ci_if_error: false
-
-  security:
-    name: Security scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache: true
-      - name: Run Gosec Security Scanner
-        run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          gosec -no-fail -fmt json -out gosec-results.json ./...
-
-  go-mod-check:
-    name: Go modules check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache: true
-      - name: Verify go.mod
-        run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum

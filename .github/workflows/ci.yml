@@ -23,7 +23,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
-          cache: true
 
       - name: Lint
         run: go vet ./...

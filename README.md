@@ -4,6 +4,11 @@
 
 [English](#english) | [中文](#中文)
 
+[![Go Version](https://img.shields.io/github/go-mod/go-version/wsyqn6/hl7)](https://github.com/wsyqn6/hl7)
+[![License](https://img.shields.io/github/license/wsyqn6/hl7)](https://github.com/wsyqn6/hl7)
+[![Test](https://github.com/wsyqn6/hl7/actions/workflows/ci.yml/badge.svg)](https://github.com/wsyqn6/hl7/actions)
+[![Coverage](https://codecov.io/gh/wsyqn6/hl7/branch/main/graph/badge.svg)](https://codecov.io/gh/wsyqn6/hl7)
+
 ---
 
 ## English

@@ -86,8 +86,12 @@ func (r *valueRule) Validate(msg *Message) *ValidationError {
 }
 
 // Pattern creates a rule that checks if a field matches a regex pattern.
+// The compiled regex is cached globally for performance.
 func Pattern(location string, pattern string) Rule {
-	return &patternRule{location: location, pattern: regexp.MustCompile(pattern)}
+	return &patternRule{
+		location: location,
+		pattern:  compileRegex(pattern),
+	}
 }
 
 type patternRule struct {

@@ -1,0 +1,54 @@
+name: Benchmark
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - '**.go'
+      - '.github/workflows/bench.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '**.go'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: Performance benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Run benchmarks
+        run: |
+          go test -bench=. -benchmem -run=^$ -count=5 ./... > benchmark.txt
+          cat benchmark.txt
+
+      - name: Compare with main branch
+        if: github.event_name == 'pull_request'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'go'
+          output-path: benchmark.txt
+          auto-push: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: true
+
+      - name: Store benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-result
+          path: benchmark.txt
+          retention-days: 30

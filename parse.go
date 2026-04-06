@@ -3,14 +3,17 @@ package hl7
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"io"
+	"runtime"
 )
 
 // Default values for Scanner configuration
 const (
 	DefaultMaxMessageSize = 64 * 1024 // 64KB
 	DefaultMaxSegments    = 1000
-	DefaultMaxFieldLength = 32 * 1024 // 32KB
+	DefaultMaxFieldLength = 32 * 1024  // 32KB
+	DefaultBufferSize     = 256 * 1024 // 256KB for Scanner buffer
 )
 
 // Parser parses HL7 messages.
@@ -142,6 +145,7 @@ func ParseString(data string) (*Message, error) {
 // ScannerConfig holds configuration for the Scanner.
 type ScannerConfig struct {
 	MaxMessageSize int        // Maximum message size in bytes
+	BufferSize     int        // Scanner buffer size (default: 256KB)
 	Delimiters     Delimiters // Custom delimiters
 	SkipInvalid    bool       // Skip invalid messages and continue scanning
 }
@@ -194,6 +198,7 @@ func NewScanner(reader io.Reader) *Scanner {
 func NewScannerWithOptions(reader io.Reader, opts ...ScannerOption) *Scanner {
 	cfg := ScannerConfig{
 		MaxMessageSize: DefaultMaxMessageSize,
+		BufferSize:     DefaultBufferSize,
 		Delimiters:     DefaultDelimiters(),
 		SkipInvalid:    false,
 	}
@@ -202,10 +207,25 @@ func NewScannerWithOptions(reader io.Reader, opts ...ScannerOption) *Scanner {
 		opt(&cfg)
 	}
 
+	bufferSize := cfg.BufferSize
+	if bufferSize < 4096 {
+		bufferSize = 4096
+	}
+
 	return &Scanner{
 		cfg:    cfg,
-		reader: bufio.NewReaderSize(reader, 4096),
+		reader: bufio.NewReaderSize(reader, bufferSize),
 		parser: NewParserWithDelimiters(cfg.Delimiters),
+	}
+}
+
+// WithBufferSize sets a custom buffer size for the scanner.
+// A larger buffer can improve performance for large messages.
+func WithBufferSize(size int) ScannerOption {
+	return func(cfg *ScannerConfig) {
+		if size > 0 {
+			cfg.BufferSize = size
+		}
 	}
 }
 
@@ -425,4 +445,143 @@ func StripMLLP(data []byte) []byte {
 	data = bytes.TrimPrefix(data, []byte{MLLP_START})
 	data = bytes.TrimSuffix(data, []byte{MLLP_END, MLLP_CR})
 	return bytes.TrimSpace(data)
+}
+
+const (
+	defaultParallelThreshold = 20
+	defaultMaxWorkers        = 0 // 0 means auto-detect (GOMAXPROCS)
+)
+
+type parallelParser struct {
+	parser    *Parser
+	workers   int
+	threshold int
+}
+
+func newParallelParser() *parallelParser {
+	return &parallelParser{
+		parser:    NewParser(),
+		workers:   defaultMaxWorkers,
+		threshold: defaultParallelThreshold,
+	}
+}
+
+func (p *parallelParser) Parse(ctx context.Context, data []byte) (*Message, error) {
+	if len(data) == 0 {
+		return nil, &ParseError{Message: "empty data"}
+	}
+
+	data = bytes.ReplaceAll(data, []byte{'\r', '\n'}, []byte{'\r'})
+	data = bytes.ReplaceAll(data, []byte{'\n'}, []byte{'\r'})
+	data = bytes.TrimSuffix(data, []byte{'\r'})
+
+	segments := bytes.Split(data, []byte{'\r'})
+	if len(segments) > p.parser.config.MaxSegments {
+		return nil, &ParseError{Message: "too many segments"}
+	}
+
+	if len(segments) < p.threshold {
+		return p.parser.Parse(data)
+	}
+
+	return p.parseParallel(ctx, segments)
+}
+
+func (p *parallelParser) parseParallel(ctx context.Context, segments [][]byte) (*Message, error) {
+	numWorkers := p.workers
+	if numWorkers <= 0 {
+		numWorkers = runtime.GOMAXPROCS(0)
+	}
+	_ = numWorkers // Workers are determined by channel capacity
+
+	errChan := make(chan error, len(segments))
+	segChan := make(chan parsedSegment, len(segments))
+
+	for i, segData := range segments {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		if len(bytes.TrimSpace(segData)) == 0 {
+			continue
+		}
+
+		go func(idx int, data []byte) {
+			data = bytes.TrimSpace(data)
+			if len(data) == 0 {
+				segChan <- parsedSegment{idx: idx}
+				return
+			}
+
+			seg, err := p.parser.parseSegment(data)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			segChan <- parsedSegment{idx: idx, seg: seg}
+		}(i, segData)
+	}
+
+	msg := &Message{
+		segments: make([]Segment, 0, len(segments)),
+		delims:   p.parser.delims,
+	}
+
+	received := 0
+	for received < len(segments) {
+		select {
+		case err := <-errChan:
+			return nil, err
+		case ps := <-segChan:
+			received++
+			if ps.seg.Name() != "" {
+				msg.segments = append(msg.segments, ps.seg)
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	return msg, nil
+}
+
+type parsedSegment struct {
+	idx int
+	seg Segment
+}
+
+func (p *Parser) ParseParallel(ctx context.Context, data []byte) (*Message, error) {
+	pp := &parallelParser{
+		parser:    p,
+		workers:   defaultMaxWorkers,
+		threshold: defaultParallelThreshold,
+	}
+	return pp.Parse(ctx, data)
+}
+
+func (p *Parser) ParseParallelWithWorkers(ctx context.Context, data []byte, workers, threshold int) (*Message, error) {
+	if workers <= 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	if threshold <= 0 {
+		threshold = defaultParallelThreshold
+	}
+	pp := &parallelParser{
+		parser:    p,
+		workers:   workers,
+		threshold: threshold,
+	}
+	return pp.Parse(ctx, data)
+}
+
+func ParseParallel(ctx context.Context, data []byte) (*Message, error) {
+	p := NewParser()
+	return p.ParseParallel(ctx, data)
+}
+
+func ParseParallelWithWorkers(ctx context.Context, data []byte, workers, threshold int) (*Message, error) {
+	p := NewParser()
+	return p.ParseParallelWithWorkers(ctx, data, workers, threshold)
 }
